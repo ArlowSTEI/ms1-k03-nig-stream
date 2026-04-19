@@ -93,6 +93,56 @@ app.get('/api/:familyId/:userId', sessionMiddleware, async (c) => {
   return c.json({data: { roomToken: await at.toJwt() }});
 });
 
+app.get('/api/check/:familyId/:userId', sessionMiddleware, async (c) => {
+  const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = env<{
+    LIVEKIT_URL: string,
+    LIVEKIT_API_KEY: string,
+    LIVEKIT_API_SECRET: string,
+  }>(c);
+  
+  const session = c.var.sessionToken;
+  const familyId = c.req.param('familyId');
+  const userId = c.req.param('userId');
+
+  const familyResponse = await fetch(
+    `https://mad.labpro.hmif.dev/api/family/${familyId}`,
+    { headers: { 'Authorization': `BEARER ${session}` }},
+  );
+
+  if (!familyResponse.ok) {
+    throw new HTTPException(familyResponse.status as any);
+  }
+
+  try {
+    const { data: { isMember } } = z.parse(UserInFamilyPayload, familyResponse.json());
+    if (!isMember) {
+      throw new HTTPException(401);
+    }
+  } catch (e) {
+    if (e instanceof HTTPException) {
+      throw e;
+    } else {
+      throw new HTTPException(500);
+    }
+  }
+
+  const roomName = `${familyId}.${userId}`;
+
+  try {
+    const roomServiceClient = new RoomServiceClient(
+      LIVEKIT_URL,
+      LIVEKIT_API_KEY,
+      LIVEKIT_API_SECRET,
+    );
+
+    const rooms = await roomServiceClient.listRooms([roomName]);
+
+    return c.json({data: { found: rooms.length > 0 }});
+  } catch (_) {
+    throw new HTTPException(500);
+  }
+});
+
 app.delete('/api/:familyId/:userId', sessionMiddleware, async (c) => {
   const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = env<{
     LIVEKIT_URL: string,
