@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import { env } from 'hono/adapter';
 import { createMiddleware } from 'hono/factory';
 import { HTTPException } from 'hono/http-exception';
-import { AccessToken } from 'livekit-server-sdk';
+import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
 import { UserIdPayload, UserInFamilyPayload } from './types.js';
 
 const app = new Hono()
@@ -92,5 +92,79 @@ app.get('/api/:familyId/:userId', sessionMiddleware, async (c) => {
 
   return c.json({data: { roomToken: await at.toJwt() }});
 });
+
+app.delete('/api/:familyId/:userId', sessionMiddleware, async (c) => {
+  const { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET } = env<{
+    LIVEKIT_URL: string,
+    LIVEKIT_API_KEY: string,
+    LIVEKIT_API_SECRET: string,
+  }>(c);
+  
+  const session = c.var.sessionToken;
+  const familyId = c.req.param('familyId');
+  const userId = c.req.param('userId');
+
+  const familyResponse = await fetch(
+    `https://mad.labpro.hmif.dev/api/family/${familyId}`,
+    { headers: { 'Authorization': `BEARER ${session}` }},
+  );
+
+  if (!familyResponse.ok) {
+    throw new HTTPException(familyResponse.status as any);
+  }
+
+  try {
+    const { data: { isMember } } = z.parse(UserInFamilyPayload, familyResponse.json());
+    if (!isMember) {
+      throw new HTTPException(401);
+    }
+  } catch (e) {
+    if (e instanceof HTTPException) {
+      throw e;
+    } else {
+      throw new HTTPException(500);
+    }
+  }
+
+  const userResponse = await fetch(
+    "https://mad.labpro.hmif.dev/api/me",
+    { headers: { 'Authorization': `BEARER ${session}` }},
+  );
+
+  if (!userResponse.ok) {
+    throw new HTTPException(userResponse.status as any);
+  }
+
+  const fetchedUserId = (() => {
+    try {
+      const userIdPayload = z.parse(UserIdPayload, userResponse.json())
+      return userIdPayload.data.id;
+    } catch (_) {
+      throw new HTTPException(500);
+    }
+  })();
+
+  const isHost = userId === fetchedUserId.toString();
+
+  if (!isHost) {
+    throw new HTTPException(401);
+  }
+
+  const roomName = `${familyId}.${userId}`;
+
+  try {
+    const roomServiceClient = new RoomServiceClient(
+      LIVEKIT_URL,
+      LIVEKIT_API_KEY,
+      LIVEKIT_API_SECRET,
+    );
+
+    await roomServiceClient.deleteRoom(roomName);
+  } catch (_) {
+    throw new HTTPException(500);
+  }
+  
+  return c.json({data: { success: true }});
+})
 
 export default app
